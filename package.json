@@ -1,14 +1,11 @@
 {
   "name": "ultimate-guitar-api",
   "version": "1.0.0",
-  "description": "",
   "main": "index.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "ts-node ./index.ts"
+    "start": "ts-node ./index.ts",
+    "format": "prettier --write ."
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "dependencies": {
     "puppeteer": "^22.9.0",
@@ -19,6 +16,9 @@
     "ws": "^8.17.0"
   },
   "devDependencies": {
+    "eslint": "^9.3.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }

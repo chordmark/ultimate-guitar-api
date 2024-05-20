@@ -2,7 +2,7 @@
 
 Project to scrape [Ultimate Guitar](https://www.ultimate-guitar.com)
 
-Goal is to provide: 
+Goal is to provide:
 
 1. typeahead service
 2. search retrieval
