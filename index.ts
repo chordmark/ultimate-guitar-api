@@ -12,6 +12,11 @@ const wss = new WebSocketServer({ port: 4001 });
 const inputSelector =
   'form[action="https://www.ultimate-guitar.com/search.php"] input[placeholder="Enter artist name or song title"]';
 
+interface Music {
+  music: string;
+  results?: string[];
+}
+
 interface Suggestion {
   suggest: string;
   ws?: any;
@@ -21,12 +26,21 @@ interface Suggestion {
 interface Search {
   search: string;
   page?: number;
-  ws?: any;
   results?: any[];
 }
 
-const suggestions: Suggestion[] = [];
-const searches: Search[] = [];
+const suggestResults: Suggestion[] = [];
+const searchResults: Search[] = [];
+const musicResults: Music[] = [];
+
+const safeJson = async (response) => {
+  try {
+    const json = await response.json();
+    return json;
+  } catch (e) {
+    return { suggestions: [] };
+  }
+};
 
 const clear = (page) => {
   return page.keyboard.down('Control').then((ign) => {
@@ -41,6 +55,14 @@ const clear = (page) => {
 };
 
 const search = async (browser) => {
+  const page = await browser.newPage();
+  page.setDefaultNavigationTimeout(0);
+  await page.goto('https://www.ultimate-guitar.com/');
+  page.waitForNavigation({ waitUntil: 'load' });
+  return page;
+};
+
+const music = async (browser) => {
   const page = await browser.newPage();
   page.setDefaultNavigationTimeout(0);
   await page.goto('https://www.ultimate-guitar.com/');
@@ -64,36 +86,43 @@ const typeahead = async (browser) => {
         )
     ) {
       if (response.ok) {
-        try {
-          const json = await response.json();
-          const searchTerm = response
-            .url()
-            .split('/')
-            .pop()
-            .slice(0, -3)
-            .replace(/_/gi, ' ');
-          const suggestion = suggestions.find((s: Suggestion) => {
-            return s.suggest === searchTerm;
-          });
+        const json = await safeJson(response);
+        const searchTerm = response
+          .url()
+          .split('/')
+          .pop()
+          .slice(0, -3)
+          .replace(/_/gi, ' ');
 
-          if (suggestion) {
-            suggestion.ws.send(
-              JSON.stringify({
-                suggest: suggestion.suggest,
-                results: json.suggestions,
-              })
-            );
-            suggestion.results = json.suggestions;
-            delete suggestion.ws;
-            clear(page);
-          } else {
-            suggestions.push({
-              suggest: searchTerm,
+        const suggestion = suggestResults.find((s: Suggestion) => {
+          return s.suggest === searchTerm;
+        });
+
+        if (suggestion) {
+          console.log(
+            'suggest complete:',
+            `:${suggestion.suggest}:`,
+            json.suggestions.length
+          );
+          suggestion.ws.send(
+            JSON.stringify({
+              suggest: suggestion.suggest,
               results: json.suggestions,
-            });
-          }
-        } catch (e) {
-          console.log('error:', e);
+            })
+          );
+          suggestion.results = json.suggestions;
+          delete suggestion.ws;
+          clear(page);
+        } else {
+          console.log(
+            'random suggest complete:',
+            `:${suggestion.suggest}:`,
+            json.suggestions.length
+          );
+          suggestResults.push({
+            suggest: searchTerm,
+            results: json.suggestions,
+          });
         }
       }
     }
@@ -103,45 +132,116 @@ const typeahead = async (browser) => {
 
 puppeteer
   .launch({
-    headless: true,
+    headless: false,
     defaultViewport: null,
     args: ['--no-sandbox', '--start-maximized'],
   })
   .then(async (browser) => {
-    const [suggestInput, searchPage] = await Promise.all([
+    const [suggestInput, searchPage, musicPage] = await Promise.all([
       typeahead(browser),
       search(browser),
+      music(browser),
     ]);
     console.log('ready!');
     wss.on('connection', function connection(ws) {
       ws.on('message', function message(data) {
         const json = JSON.parse(data);
-        if (json.suggest && json.suggest.length > 0) {
-          const suggest = suggestions.find((s: Suggestion) => {
-            return s.suggest === json.suggest;
+        if (json.music && json.music.length > 0) {
+          const foundMusic = musicResults.find((m: Music) => {
+            return m.music === json.music;
           });
-          if (suggest) {
-            console.log('suggest found:', json.suggest);
+          if (foundMusic) {
+            console.log(
+              'music found:',
+              `:${json.music}:`,
+              foundMusic.results.length
+            );
             ws.send(
               JSON.stringify({
-                suggest: json.suggest,
-                results: suggest.results,
+                music: json.search,
+                results: foundMusic.results,
               })
             );
           } else {
-            console.log('suggest lookup:', json.suggest);
+            console.log('music lookup:', json.music);
+            musicPage
+              .goto(json.music, { waitUntil: 'load' })
+              .then((res: any) => {
+                console.log('music status:', res.ok());
+                musicPage
+                  .waitForSelector('article section section pre')
+                  .then((ok) => {
+                    musicPage
+                      .evaluate(() => {
+                        const pre = document.querySelector(
+                          'article section section pre'
+                        );
+                        if (pre) {
+                          return pre.textContent;
+                        } else {
+                          return 'Not Found';
+                        }
+                      })
+                      .then((text) => {
+                        console.log('retrieved music:', text.length);
+                        if (text.length > 0) {
+                          const res = {
+                            music: json.music,
+                            results: [text],
+                          };
+                          musicResults.push(res);
+                          ws.send(JSON.stringify(res));
+                        } else {
+                          console.log('empty music');
+                          musicResults.push({ music: json.music, results: [] });
+                          ws.send(
+                            JSON.stringify({
+                              music: json.music,
+                              results: [],
+                            })
+                          );
+                        }
+                      });
+                  });
+              });
+          }
+        } else if (json.suggest && json.suggest.length > 0) {
+          const foundSuggest = suggestResults.find((s: Suggestion) => {
+            return s.suggest === json.suggest;
+          });
+          if (foundSuggest) {
+            console.log(
+              'suggest found:',
+              `:${json.suggest}:`,
+              foundSuggest.results.length
+            );
+            ws.send(
+              JSON.stringify({
+                suggest: json.suggest,
+                results: foundSuggest.results,
+              })
+            );
+          } else {
+            console.log('suggest lookup:', `:${json.suggest}:`);
             suggestInput.focus();
-            suggestions.push({ suggest: json.suggest, ws: ws });
+            suggestResults.push({ suggest: json.suggest, ws: ws });
             suggestInput.type(json.suggest);
           }
         } else if (json.search && json.search.length > 0) {
-          const search = searches.find((s: Search) => {
+          const foundSearch = searchResults.find((s: Search) => {
             return s.search === json.search;
           });
-          if (search) {
-            console.log('search found:', json.search);
+          if (foundSearch) {
+            console.log(
+              'search found:',
+              `:${json.suggest}:`,
+              json.results.length
+            );
             ws.send(
-              JSON.stringify({ search: json.search, results: search.results })
+              JSON.stringify({
+                search: json.search,
+                results: foundSearch.results,
+              })
             );
           } else {
             console.log('search lookup:', json.search);
@@ -151,7 +251,7 @@ puppeteer
                 { waitUntil: 'load' }
               )
               .then((res: any) => {
-                console.log('status:', res.ok());
+                console.log('search status:', res.ok());
                 searchPage
                   .evaluate(() => {
                     const divs = document.querySelectorAll(
@@ -160,41 +260,49 @@ puppeteer
                     const good = Array.from(divs)
                       .filter((d) => {
                         return (
-                          [
-                            'chords',
-                            'tab',
-                            'power',
-                            'bass',
-                            'guitar pro',
-                          ].indexOf(d.textContent) > -1
+                          ['chords', 'tab', 'bass'].indexOf(d.textContent) > -1
                         );
                       })
                       .map((qualify) => {
+                        const anchor = qualify.parentNode.querySelector(
+                          'div:nth-child(2) > header > span > span > a'
+                        );
+                        let artistDiv: HTMLElement =
+                          qualify.parentElement as HTMLElement;
+                        let artist = artistDiv.querySelector(
+                          'div:nth-child(1) > span'
+                        ).textContent;
+                        while (artist === '') {
+                          artistDiv =
+                            artistDiv.previousElementSibling as HTMLElement;
+                          artist =
+                            artistDiv.querySelector('div > span').textContent;
+                        }
                         return {
                           type: qualify.textContent,
-                          song: qualify.parentNode.querySelector(
-                            'div:nth-child(2) > header > span > span > a'
-                          ).textContent,
+                          song: anchor.textContent,
+                          href: anchor.getAttribute('href'),
+                          artist: artist,
                         };
                       });
                     return good;
                   })
                   .then((results) => {
                     if (results.length > 0) {
-                      console.log('search result length:', results.length);
+                      console.log('search retrieved length:', results.length);
                       const res = {
                         search: json.search,
                         results: results,
                       };
-                      searches.push(res);
+                      searchResults.push(res);
                       ws.send(JSON.stringify(res));
                     } else {
                       console.log('empty search');
-                      searches.push({ search: json.search, results: [] });
+                      searchResults.push({ search: json.search, results: [] });
                       ws.send(
                         JSON.stringify({
                           search: json.search,
-                          results: search.results,
+                          results: [],
                         })
                       );
                     }
